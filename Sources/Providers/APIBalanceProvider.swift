@@ -238,11 +238,35 @@ actor APIBalanceProvider: UsageProvider {
            now().timeIntervalSince(cached.fetchedAt) < Self.checkInterval {
             return snapshot(cached.windows)
         }
-        guard let key = APIBalanceSettings.key(service) else { throw UsageProviderError.needsAuth }
-        let window = try await readBalance(key: key)
+        // Errors become a visible status rather than a throw: the store drops a
+        // provider that is hidden when absent on *any* failure, so a rejected
+        // key used to make the ring vanish without a word.
+        guard let key = APIBalanceSettings.key(service) else {
+            return failed(L10n.t("macOS did not hand over the saved key. Paste it again in Settings › Providers."))
+        }
+        let window: LimitWindow
+        do {
+            window = try await readBalance(key: key)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as UsageProviderError {
+            switch error {
+            case .apiError(let why): return failed(why)
+            case .badResponse(let status): return failed(L10n.t("\(displayName) answered HTTP \(status)"))
+            case .timedOut: return failed(L10n.t("\(displayName) did not answer in time"))
+            case .rateLimited: return failed(L10n.t("\(displayName) is rate limiting — try later"))
+            default: return failed(String(describing: error))
+            }
+        }
         APIBalanceSettings.setCached(.init(windows: [window], fetchedAt: now()), for: service)
         if let money = window.money { Self.alertIfLow(service, remaining: money.remaining, estimated: !service.isOfficial) }
         return snapshot([window])
+    }
+
+    private func failed(_ why: String) -> ProviderSnapshot {
+        var failed = snapshot([])
+        failed.status = .error(why)
+        return failed
     }
 
     private func snapshot(_ windows: [LimitWindow]) -> ProviderSnapshot {
