@@ -156,6 +156,16 @@ enum APIBalanceSettings {
     struct Baseline: Codable, Equatable {
         let amount: Double
         let at: Date
+        /// OpenAI's buckets are whole days, so the day of the top-up holds
+        /// spend from before `at` that `amount` already paid for. Read on the
+        /// first check after Set and subtracted from then on.
+        var spentBefore: Double? = nil
+    }
+
+    static func setSpentBefore(_ value: Double, for service: APIBalanceService) {
+        guard var current = baseline(service),
+              let data = try? JSONEncoder().encode({ current.spentBefore = value; return current }()) else { return }
+        defaults.set(data, forKey: "apiBalance.\(service.rawValue).baseline")
     }
 
     static func baseline(_ service: APIBalanceService) -> Baseline? {
@@ -349,7 +359,15 @@ actor APIBalanceProvider: UsageProvider {
                                    detail: L10n.t("\(ApifyUsage.money(spent)) this month — enter your balance in Settings to see what is left"),
                                    prefersUsedText: true)
             }
-            let spent = try await spend(since: baseline.at, key: key)
+            var spent = try await spend(since: baseline.at, key: key)
+            if service == .openai {
+                if let before = baseline.spentBefore {
+                    spent = max(0, spent - before)
+                } else {
+                    APIBalanceSettings.setSpentBefore(spent, for: service)
+                    spent = 0
+                }
+            }
             let remaining = max(0, baseline.amount - spent)
             return LimitWindow(id: "balance",
                                label: service == .anthropic
@@ -395,7 +413,7 @@ actor APIBalanceProvider: UsageProvider {
             default:
                 components = URLComponents(string: "https://api.openai.com/v1/organization/costs")!
                 components.queryItems = [
-                    URLQueryItem(name: "start_time", value: String(Int(start.timeIntervalSince1970))),
+                    URLQueryItem(name: "start_time", value: String(Int(Self.utcDayStart(start).timeIntervalSince1970))),
                     URLQueryItem(name: "bucket_width", value: "1d"),
                     URLQueryItem(name: "limit", value: "180")
                 ]
