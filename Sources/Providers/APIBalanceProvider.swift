@@ -84,35 +84,60 @@ enum APIBalanceService: String, CaseIterable, Sendable {
     }
 }
 
-/// What Settings stores for each service: the key in the login keychain, the
+/// What Settings stores for each service: the key in a private file, the
 /// rest in user defaults. None of the defaults are secret.
 enum APIBalanceSettings {
-    static let keychainAccount = "codenotch"
     private static var defaults: UserDefaults { .standard }
 
-    static func keychainService(_ service: APIBalanceService) -> String { "codenotch-balance-\(service.rawValue)" }
+    /// The keys live in a file only this user can read, not the keychain.
+    ///
+    /// Every build from CI is ad-hoc signed, so macOS sees each one as a new
+    /// app and asks again for every key the last build stored — and a refused
+    /// prompt hid the ring. A 0600 file in Application Support never prompts,
+    /// survives rebuilds, and is as private as the shell exports these keys
+    /// usually come from.
+    static var keysURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Codenotch/api-balance-keys.json")
+    }
+
+    private static func readKeys() -> [String: String] {
+        guard let data = try? Data(contentsOf: keysURL),
+              let keys = try? JSONDecoder().decode([String: String].self, from: data) else { return [:] }
+        return keys
+    }
+
+    private static func writeKeys(_ keys: [String: String]) {
+        let url = keysURL
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: 0o700])
+        guard let data = try? JSONEncoder().encode(keys) else { return }
+        FileManager.default.createFile(atPath: url.path, contents: data,
+                                       attributes: [.posixPermissions: 0o600])
+        // createFile keeps an existing file's mode, so set it either way.
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
 
     static func key(_ service: APIBalanceService,
                     environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
-        if let stored = nonEmpty(KeychainItem.read(service: keychainService(service), account: keychainAccount)) {
-            return stored
-        }
-        return nonEmpty(environment[service.environmentKey])
+        nonEmpty(readKeys()[service.rawValue]) ?? nonEmpty(environment[service.environmentKey])
     }
 
-    static func hasKey(_ service: APIBalanceService) -> Bool {
-        KeychainItem.modifiedAt(service: keychainService(service), account: keychainAccount) != nil
-            || nonEmpty(ProcessInfo.processInfo.environment[service.environmentKey]) != nil
-    }
+    static func hasKey(_ service: APIBalanceService) -> Bool { key(service) != nil }
 
     static func storeKey(_ value: String, for service: APIBalanceService) {
         guard let trimmed = nonEmpty(value) else { return }
-        _ = KeychainItem.store(service: keychainService(service), account: keychainAccount, value: trimmed)
+        var keys = readKeys()
+        keys[service.rawValue] = trimmed
+        writeKeys(keys)
         clearCache(service)
     }
 
     static func deleteKey(_ service: APIBalanceService) {
-        _ = KeychainItem.delete(service: keychainService(service), account: keychainAccount)
+        var keys = readKeys()
+        keys[service.rawValue] = nil
+        writeKeys(keys)
         clearCache(service)
     }
 
@@ -184,6 +209,21 @@ enum APIBalanceSettings {
     /// A changed key, team or baseline must show at once, not tomorrow.
     static func clearCache(_ service: APIBalanceService) {
         defaults.removeObject(forKey: "apiBalance.\(service.rawValue).cache")
+        defaults.removeObject(forKey: "apiBalance.\(service.rawValue).failure")
+    }
+
+    struct Failure: Codable {
+        let why: String
+        let at: Date
+    }
+
+    static func failure(_ service: APIBalanceService) -> Failure? {
+        guard let data = defaults.data(forKey: "apiBalance.\(service.rawValue).failure") else { return nil }
+        return try? JSONDecoder().decode(Failure.self, from: data)
+    }
+
+    static func setFailure(_ failure: Failure, for service: APIBalanceService) {
+        defaults.set(try? JSONEncoder().encode(failure), forKey: "apiBalance.\(service.rawValue).failure")
     }
 
     static func nonEmpty(_ value: String?) -> String? {
@@ -202,6 +242,9 @@ actor APIBalanceProvider: UsageProvider {
 
     private let session: URLSession
     private let now: @Sendable () -> Date
+    /// A failed check is not retried on every poll: once an hour, unless
+    /// Refresh now or a new key asks for it sooner.
+    static let retryAfterFailure: TimeInterval = 60 * 60
 
     init(_ service: APIBalanceService, session: URLSession = .shared,
          now: @escaping @Sendable () -> Date = { Date() }) {
@@ -231,8 +274,6 @@ actor APIBalanceProvider: UsageProvider {
     }
 
     func fetchSnapshot(freshness: UsageFreshness) async throws -> ProviderSnapshot {
-        // Attributes only before the cache check: the store polls every
-        // minute, and the secret is read once a day, when it is used.
         guard APIBalanceSettings.hasKey(service) else { throw UsageProviderError.needsAuth }
         if freshness != .fromSource, let cached = APIBalanceSettings.cached(service),
            now().timeIntervalSince(cached.fetchedAt) < Self.checkInterval {
@@ -241,9 +282,11 @@ actor APIBalanceProvider: UsageProvider {
         // Errors become a visible status rather than a throw: the store drops a
         // provider that is hidden when absent on *any* failure, so a rejected
         // key used to make the ring vanish without a word.
-        guard let key = APIBalanceSettings.key(service) else {
-            return failed(L10n.t("macOS did not hand over the saved key. Paste it again in Settings › Providers."))
+        if freshness != .fromSource, let failure = APIBalanceSettings.failure(service),
+           now().timeIntervalSince(failure.at) < Self.retryAfterFailure {
+            return failed(failure.why)
         }
+        guard let key = APIBalanceSettings.key(service) else { throw UsageProviderError.needsAuth }
         let window: LimitWindow
         do {
             window = try await readBalance(key: key)
@@ -258,12 +301,16 @@ actor APIBalanceProvider: UsageProvider {
             default: return failed(String(describing: error))
             }
         }
+        APIBalanceSettings.clearCache(service)
         APIBalanceSettings.setCached(.init(windows: [window], fetchedAt: now()), for: service)
         if let money = window.money { Self.alertIfLow(service, remaining: money.remaining, estimated: !service.isOfficial) }
         return snapshot([window])
     }
 
     private func failed(_ why: String) -> ProviderSnapshot {
+        if APIBalanceSettings.failure(service)?.why != why {
+            APIBalanceSettings.setFailure(.init(why: why, at: now()), for: service)
+        }
         var failed = snapshot([])
         failed.status = .error(why)
         return failed
@@ -332,7 +379,9 @@ actor APIBalanceProvider: UsageProvider {
             case .anthropic:
                 components = URLComponents(string: "https://api.anthropic.com/v1/organizations/cost_report")!
                 components.queryItems = [
-                    URLQueryItem(name: "starting_at", value: ISO8601DateFormatter().string(from: start)),
+                    // Midnight UTC: buckets are whole days, and the day of the
+                    // top-up is counted in full, which errs towards less left.
+                    URLQueryItem(name: "starting_at", value: ISO8601DateFormatter().string(from: Self.utcDayStart(start))),
                     URLQueryItem(name: "bucket_width", value: "1d"),
                     URLQueryItem(name: "limit", value: "31")
                 ]
@@ -358,6 +407,12 @@ actor APIBalanceProvider: UsageProvider {
         return total
     }
 
+    static func utcDayStart(_ date: Date) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar.startOfDay(for: date)
+    }
+
     private func get(_ url: URL, headers: [String: String]) async throws -> Data {
         var request = URLRequest(url: url)
         headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
@@ -377,15 +432,17 @@ actor APIBalanceProvider: UsageProvider {
             throw UsageProviderError.apiError(L10n.t("Couldn't reach \(displayName). Check your connection."))
         }
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if (200..<300).contains(status) { return data }
+        // The provider's own words where it gave some, then what to do about it.
+        let said = APIBalanceParse.errorMessage(data).map { " — \($0)" } ?? ""
         switch status {
-        case 200..<300: return data
         // Not `needsAuth`: a key is saved, and that state hides the ring and
         // asks for a key, so a rejected one looked like nothing at all.
-        case 401: throw UsageProviderError.apiError(L10n.t("\(displayName) rejected the saved key (HTTP 401). It must be an \(service.keyLabel)."))
-        case 403: throw UsageProviderError.apiError(L10n.t("This key cannot read billing (HTTP 403) — use an admin or management key"))
-        case 404 where service == .xai: throw UsageProviderError.apiError(L10n.t("xAI found no team with that ID (HTTP 404)"))
+        case 401: throw UsageProviderError.apiError(L10n.t("HTTP 401: key rejected. It must be an \(service.keyLabel)\(said)"))
+        case 403: throw UsageProviderError.apiError(L10n.t("HTTP 403: this key cannot read billing. It must be an \(service.keyLabel)\(said)"))
+        case 404 where service == .xai: throw UsageProviderError.apiError(L10n.t("HTTP 404: xAI found no team with that ID\(said)"))
         case 429: throw UsageProviderError.rateLimited(retryAfter: 3600)
-        default: throw UsageProviderError.badResponse(status: status)
+        default: throw UsageProviderError.apiError("HTTP \(status)\(said)")
         }
     }
 
@@ -460,6 +517,16 @@ enum APIBalanceParse {
             .reduce(0, +)
         let more = root["has_more"] as? Bool ?? false
         return CostPage(dollars: dollars, nextPage: more ? root["next_page"] as? String : nil)
+    }
+
+    /// `{"error":{"message":…}}` (Anthropic, OpenAI, Vercel) or
+    /// `{"message":…}` (xAI), so the ring can quote the provider.
+    static func errorMessage(_ data: Data) -> String? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        let message = (root["error"] as? [String: Any])?["message"] as? String
+            ?? root["error"] as? String
+            ?? root["message"] as? String
+        return APIBalanceSettings.nonEmpty(message).map { String($0.prefix(200)) }
     }
 
     private static func number(_ any: Any?) -> Double? {

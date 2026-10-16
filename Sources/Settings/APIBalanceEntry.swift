@@ -103,7 +103,7 @@ struct APIBalanceEntry: View {
                 }
             }
 
-            Text(service.keyHelp + " " + L10n.t("Checked once a day; click the ring to check now. The key is stored in your login keychain."))
+            Text(service.keyHelp + " " + L10n.t("Checked once a day; click the ring to check now. The key is kept in a file only your user can read."))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }

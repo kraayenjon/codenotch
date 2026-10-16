@@ -38,6 +38,13 @@ final class APIBalanceParseTests: XCTestCase {
         }
     }
 
+    func testErrorMessageReadsEitherShape() {
+        XCTAssertEqual(APIBalanceParse.errorMessage(Data(#"{"type":"error","error":{"type":"invalid_request_error","message":"starting_at is invalid"}}"#.utf8)),
+                       "starting_at is invalid")
+        XCTAssertEqual(APIBalanceParse.errorMessage(Data(#"{"code":16,"message":"Bad credentials."}"#.utf8)), "Bad credentials.")
+        XCTAssertNil(APIBalanceParse.errorMessage(Data("<html>".utf8)))
+    }
+
     func testGarbageIsABadResponse() {
         XCTAssertThrowsError(try APIBalanceParse.vercelBalance(Data("nope".utf8)))
         XCTAssertThrowsError(try APIBalanceParse.xaiBalance(Data("{}".utf8)))
