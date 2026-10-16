@@ -351,7 +351,10 @@ actor APIBalanceProvider: UsageProvider {
             }
             let spent = try await spend(since: baseline.at, key: key)
             let remaining = max(0, baseline.amount - spent)
-            return LimitWindow(id: "balance", label: L10n.t("Credit balance (estimate)"),
+            return LimitWindow(id: "balance",
+                               label: service == .anthropic
+                                   ? L10n.t("Credit balance (estimate, excludes today)")
+                                   : L10n.t("Credit balance (estimate)"),
                                usedFraction: baseline.amount > 0 ? min(spent / baseline.amount, 1) : 1,
                                usedText: "≈\(ApifyUsage.money(remaining)) left",
                                money: UsageMoneyBreakdown(currency: "USD", spent: min(spent, baseline.amount),
@@ -370,6 +373,9 @@ actor APIBalanceProvider: UsageProvider {
 
     /// Dollars spent since `start`, from the Admin cost endpoint, all pages.
     private func spend(since start: Date, key: String) async throws -> Double {
+        // Anthropic reports finished UTC days only, and refuses a range that
+        // holds none: a balance typed in today has nothing to subtract yet.
+        if service == .anthropic, Self.utcDayStart(start) >= Self.utcDayStart(now()) { return 0 }
         var total = 0.0
         var page: String?
         for _ in 0..<24 {
@@ -382,11 +388,6 @@ actor APIBalanceProvider: UsageProvider {
                     // Midnight UTC: buckets are whole days, and the day of the
                     // top-up is counted in full, which errs towards less left.
                     URLQueryItem(name: "starting_at", value: ISO8601DateFormatter().string(from: Self.utcDayStart(start))),
-                    // Explicit, and the end of today: left out, the range ends
-                    // where today's bucket starts, and a balance typed in today
-                    // got "ending date must be after starting date".
-                    URLQueryItem(name: "ending_at", value: ISO8601DateFormatter().string(
-                        from: Self.utcDayStart(now()).addingTimeInterval(24 * 60 * 60))),
                     URLQueryItem(name: "bucket_width", value: "1d"),
                     URLQueryItem(name: "limit", value: "31")
                 ]
