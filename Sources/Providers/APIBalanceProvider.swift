@@ -382,6 +382,11 @@ actor APIBalanceProvider: UsageProvider {
                     // Midnight UTC: buckets are whole days, and the day of the
                     // top-up is counted in full, which errs towards less left.
                     URLQueryItem(name: "starting_at", value: ISO8601DateFormatter().string(from: Self.utcDayStart(start))),
+                    // Explicit, and the end of today: left out, the range ends
+                    // where today's bucket starts, and a balance typed in today
+                    // got "ending date must be after starting date".
+                    URLQueryItem(name: "ending_at", value: ISO8601DateFormatter().string(
+                        from: Self.utcDayStart(now()).addingTimeInterval(24 * 60 * 60))),
                     URLQueryItem(name: "bucket_width", value: "1d"),
                     URLQueryItem(name: "limit", value: "31")
                 ]
