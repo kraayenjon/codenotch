@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   package:
-    if: github.repository == 'vinzdg/codenotch'
+    if: github.repository == 'kraayenjon/codenotch'
     name: Unsigned app bundle
     # Only the preview release step writes anything; the token is read-only by
     # default on this repository, and `gh release create` fails without this.

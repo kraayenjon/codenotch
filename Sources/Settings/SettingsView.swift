@@ -2173,6 +2173,12 @@ private struct AccountRow: View {
             if provider.id == "apify" {
                 apifyTokenEntry
             }
+
+            // Prepaid API credit: a key, and for Anthropic and OpenAI the
+            // balance after the last top-up. See `APIBalanceProvider`.
+            if let service = APIBalanceService(rawValue: provider.id) {
+                APIBalanceEntry(service: service) { _ = signIn(provider.id) }
+            }
         }
     }
 

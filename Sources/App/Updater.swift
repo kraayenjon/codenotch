@@ -87,6 +87,10 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate {
         guard !started else { return }
         started = true
         sparkle.automaticallyDownloadsUpdates = false
+        // Fork: the feed is upstream's, and its build would replace this one.
+        // Forced here as well as in Info.plist, because a saved preference
+        // from an earlier upstream install overrides the plist.
+        sparkle.automaticallyChecksForUpdates = false
         do {
             try sparkle.start()
         } catch {

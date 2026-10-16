@@ -37,6 +37,8 @@ enum ProviderGlyph: String, Codable, Equatable {
     case kiro
     case amp
     case apify
+    /// Vercel's triangle, for the AI Gateway credit balance.
+    case vercel
     case minimax
     case ollama
     case ollamaLocal = "ollama-local"
@@ -85,6 +87,7 @@ enum ProviderGlyph: String, Codable, Equatable {
         // The asset's viewBox is cropped to the ink, so the mark fills its box
         // the way Claude's outline does and takes the same scale.
         case .apify:  return 0.97
+        case .vercel: return 0.9
         case .minimax: return 0.95
         case .ollama: return 0.95
         case .third:  return 1.0
@@ -148,6 +151,7 @@ enum ProviderGlyph: String, Codable, Equatable {
         // A fallback only: glyph-minimax in the asset catalogue is drawn instead.
         case .minimax: return GlyphOutline.minimax
         case .ollama, .ollamaLocal: return GlyphOutline.ollama
+        case .vercel: return [[CGPoint(x: 0.5, y: 0.1), CGPoint(x: 0.98, y: 0.93), CGPoint(x: 0.02, y: 0.93)]]
         }
     }
 }

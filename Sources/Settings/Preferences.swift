@@ -1181,6 +1181,8 @@ final class Preferences: ObservableObject {
     nonisolated static func isDefaultOnFamily(_ providerID: String) -> Bool {
         ClaudeProfile.isClaude(providerID: providerID)
             || CodexProfile.isCodex(providerID: providerID)
+            // On by default: they stay out of the notch until a key is pasted.
+            || APIBalanceService(rawValue: providerID) != nil
     }
 
     /// Model cells are `providerID:model:…`. A new loaded model is not a new
