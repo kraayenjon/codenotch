@@ -13,6 +13,7 @@ struct APIBalanceEntry: View {
     @State private var key = ""
     @State private var keySaved = false
     @State private var teamID = APIBalanceSettings.xaiTeamID() ?? ""
+    @State private var teamIDSaved = APIBalanceSettings.xaiTeamID() != nil
     @State private var balance: Double?
     /// Bumped on Set, so the "Set to …" line re-reads the stored baseline.
     @State private var baselineVersion = 0
@@ -49,11 +50,17 @@ struct APIBalanceEntry: View {
                             .textFieldStyle(.roundedBorder)
                             .labelsHidden()
                             .frame(maxWidth: 260)
+                            .onChange(of: teamID) { _ in teamIDSaved = teamID == APIBalanceSettings.xaiTeamID() }
                         Button(L10n.t("Save")) {
+                            teamID = teamID.trimmingCharacters(in: .whitespacesAndNewlines)
                             APIBalanceSettings.setXAITeamID(teamID)
+                            teamIDSaved = true
                             onSave()
                         }
                         .disabled(teamID.isEmpty)
+                        if teamIDSaved {
+                            Text(L10n.t("Saved")).foregroundStyle(.green)
+                        }
                     }
                 }
             }

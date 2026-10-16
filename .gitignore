@@ -11,3 +11,6 @@ xcuserdata/
 .forgeguard/
 .playwright-mcp/
 /plans/
+.env
+.env.local
+.env.*

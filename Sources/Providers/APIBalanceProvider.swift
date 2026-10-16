@@ -355,8 +355,11 @@ actor APIBalanceProvider: UsageProvider {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         switch status {
         case 200..<300: return data
-        case 401: throw UsageProviderError.needsAuth
-        case 403: throw UsageProviderError.apiError(L10n.t("This key cannot read billing — use an admin or management key"))
+        // Not `needsAuth`: a key is saved, and that state hides the ring and
+        // asks for a key, so a rejected one looked like nothing at all.
+        case 401: throw UsageProviderError.apiError(L10n.t("\(displayName) rejected the saved key (HTTP 401). It must be an \(service.keyLabel)."))
+        case 403: throw UsageProviderError.apiError(L10n.t("This key cannot read billing (HTTP 403) — use an admin or management key"))
+        case 404 where service == .xai: throw UsageProviderError.apiError(L10n.t("xAI found no team with that ID (HTTP 404)"))
         case 429: throw UsageProviderError.rateLimited(retryAfter: 3600)
         default: throw UsageProviderError.badResponse(status: status)
         }
